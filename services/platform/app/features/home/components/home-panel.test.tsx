@@ -19,14 +19,30 @@ import {
 import type { HomeData } from '../hooks/use-home-data';
 import { homeDraftKey } from '../lib/home-drafts';
 
-const location = vi.hoisted(() => ({
-  current: { pathname: '/dashboard/org-1/chat/t1', search: {} } as {
-    pathname: string;
-    search: Record<string, unknown>;
-  },
-}));
+// The router's location, as a store: `navigate` moves it and tells every
+// reader, as the router does; setting `current` moves it for the next render.
+const location = vi.hoisted(() => {
+  const readers = new Set<() => void>();
+  const store = {
+    current: { pathname: '/dashboard/org-1/chat/t1', search: {} } as {
+      pathname: string;
+      search: Record<string, unknown>;
+    },
+    subscribe: (reader: () => void) => {
+      readers.add(reader);
+      return () => {
+        readers.delete(reader);
+      };
+    },
+    navigate: (next: { pathname: string; search: Record<string, unknown> }) => {
+      store.current = next;
+      for (const reader of readers) reader();
+    },
+  };
+  return store;
+});
 
-vi.mock('@tanstack/react-router', () => ({
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
   Link: ({
     children,
     to,
@@ -59,7 +75,13 @@ vi.mock('@tanstack/react-router', () => ({
   },
   createLink: () => () => null,
   useNavigate: () => vi.fn(),
-  useLocation: () => location.current,
+  useLocation: (
+    await import('@/tests/utils/router-location-stub')
+  ).stubUseLocation(
+    location,
+    (await importOriginal<typeof import('@tanstack/react-router')>())
+      .replaceEqualDeep,
+  ),
 }));
 
 vi.mock('@/app/hooks/use-current-user', () => ({
@@ -1510,5 +1532,73 @@ describe('HomePanel', () => {
     expect(
       window.localStorage.getItem('chat-history-panel-open-org-1'),
     ).toBeNull();
+  });
+
+  // A board writes the open task into the address (`?task=`) and takes it
+  // out on close. Nothing the panel shows reads it, yet every open and every
+  // close rendered the whole panel again — 488 components beside a
+  // 2,000-task board (#3974).
+  it("renders nothing again when a board's task opens and closes", () => {
+    const board = '/dashboard/org-1/projects/p1/tasks/board';
+    location.current = { pathname: board, search: {} };
+    const commits: string[] = [];
+    render(
+      <HomePanelProvider organizationId="org-1">
+        <React.Profiler
+          id="home-panel"
+          onRender={(_id, phase) => commits.push(phase)}
+        >
+          <HomePanel organizationId="org-1" />
+        </React.Profiler>
+      </HomePanelProvider>,
+    );
+    expect(commits).not.toEqual([]);
+    commits.length = 0;
+
+    act(() => location.navigate({ pathname: board, search: { task: 'k1' } }));
+    act(() => location.navigate({ pathname: board, search: {} }));
+
+    expect(commits).toEqual([]);
+  });
+
+  // Nothing above the panel renders again here: it follows the page and the
+  // parameters it shows through its own reads of the address.
+  it('still follows the page and the parameters it reads', () => {
+    location.current = {
+      pathname: '/dashboard/org-1/projects/p1/tasks/board',
+      search: {},
+    };
+    render(
+      <HomePanelProvider organizationId="org-1">
+        <HomePanel organizationId="org-1" />
+      </HomePanelProvider>,
+    );
+    const current = () =>
+      within(stream()).getByRole('link', { current: 'page' });
+
+    act(() =>
+      location.navigate({ pathname: '/dashboard/org-1/tasks/k1', search: {} }),
+    );
+    expect(current()).toHaveAttribute('href', '/dashboard/org-1/tasks/k1');
+
+    act(() =>
+      location.navigate({
+        pathname: '/dashboard/org-1/conversations/open',
+        search: { conversation: 'c1' },
+      }),
+    );
+    expect(current()).toHaveTextContent('Invoice shows the wrong VAT rate');
+
+    // A new chat started from a project files its draft row there.
+    act(() =>
+      location.navigate({
+        pathname: '/dashboard/org-1/chat',
+        search: { projectId: 'p1' },
+      }),
+    );
+    expect(current()).toHaveAttribute(
+      'data-search',
+      JSON.stringify({ projectId: 'p1', new: true }),
+    );
   });
 });
