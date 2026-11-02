@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
+import { requestId } from 'hono/request-id';
 import type { Sql } from 'postgres';
 
+import { appErrorHandler, requestIdOf } from '../../error-reporting.ts';
 import { sandboxDoorBodyLimit } from '../sandbox/door-body-limit.ts';
 import { authSessionToken } from './bridge-routes.ts';
 
@@ -15,7 +17,8 @@ import { authSessionToken } from './bridge-routes.ts';
  *  - each call goes to the doors the relay calls (`/api/connectors/
  *    {execute,status}`, `/api/tools/{execute,status}`), in process, with the
  *    relay's Authorization header and body, so the grants, the caller, the
- *    in-flight cap and the audit row are theirs;
+ *    in-flight cap and the audit row are theirs, and an error a door lets
+ *    escape is answered as the app answers the relay's call;
  *  - each answer is wrapped as the relay wraps it, bounds and texts included.
  *
  * Every request presents the session token itself and is refused without a
@@ -27,15 +30,11 @@ import { authSessionToken } from './bridge-routes.ts';
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = { name: 'tale-connectors', version: '1.0.0' };
 
-/** A door the endpoint calls in process: the Hono app of `/api/connectors`
- * or `/api/tools`, which answers `request(path, init)`. */
-interface BridgeMcpDoor {
-  request: (path: string, init: RequestInit) => Response | Promise<Response>;
-}
-
 interface BridgeMcpDeps {
   sql: Sql;
-  doors: { connectors: BridgeMcpDoor; tools: BridgeMcpDoor };
+  /** The Hono apps of `/api/connectors` and `/api/tools`, which the
+   * endpoint calls in process. */
+  doors: { connectors: Hono; tools: Hono };
   /** The relay's bounds; only tests change them. */
   requestTimeoutMs?: number;
   longRequestTimeoutMs?: number;
@@ -172,6 +171,35 @@ function toolText(text: string, isError: boolean): ToolResult {
   return { content: [{ type: 'text', text }], isError };
 }
 
+/** The door paths the relay calls, and the endpoint with it. */
+type DoorPath =
+  | '/api/connectors/execute'
+  | '/api/connectors/status'
+  | '/api/tools/execute'
+  | '/api/tools/status';
+
+/** Who asks for a door call: the request's Authorization header, which the
+ * door authenticates, and the request's id, if the app gave it one. */
+interface DoorCaller {
+  authorization: string;
+  requestId: string | undefined;
+}
+
+/**
+ * The two doors at the paths the relay calls, answered as the app answers
+ * that call: an error a door lets escape goes to the app's error handler (a
+ * database outage's 503, a write conflict's, a reported 500), not to Hono's
+ * bare text 500, under the id of the request that asked.
+ */
+function inProcessDoors(doors: BridgeMcpDeps['doors']): Hono {
+  const app = new Hono();
+  app.use(requestId());
+  app.onError(appErrorHandler);
+  app.route('/api/connectors', doors.connectors);
+  app.route('/api/tools', doors.tools);
+  return app;
+}
+
 class DoorTimeout extends Error {}
 
 /**
@@ -180,9 +208,9 @@ class DoorTimeout extends Error {}
  * call past its bound as the relay's timeout line.
  */
 async function callDoor(
-  door: BridgeMcpDoor,
-  path: '/execute' | '/status',
-  authorization: string,
+  doors: Hono,
+  path: DoorPath,
+  caller: DoorCaller,
   body: unknown,
   timeoutMs: number,
 ): Promise<{ ok: boolean; text: string }> {
@@ -190,9 +218,15 @@ async function callDoor(
   try {
     const res = await Promise.race([
       Promise.resolve(
-        door.request(path, {
+        doors.request(path, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization },
+          headers: {
+            'content-type': 'application/json',
+            authorization: caller.authorization,
+            ...(caller.requestId === undefined
+              ? {}
+              : { 'x-request-id': caller.requestId }),
+          },
           body: JSON.stringify(body),
         }),
       ),
@@ -238,14 +272,14 @@ export function createConnectorBridgeMcpRoutes(deps: BridgeMcpDeps): Hono {
   const requestTimeoutMs = deps.requestTimeoutMs ?? 30_000;
   const longRequestTimeoutMs = deps.longRequestTimeoutMs ?? 300_000;
   const progressIntervalMs = deps.progressIntervalMs ?? 15_000;
+  const doors = inProcessDoors(deps.doors);
 
   /** The relay's `handleToolCall`, one door call per tool. */
   async function handleToolCall(
     name: unknown,
     args: Record<string, unknown>,
-    authorization: string,
+    caller: DoorCaller,
   ): Promise<ToolResult> {
-    const { connectors, tools } = deps.doors;
     if (name === 'connector') {
       const slug = typeof args.slug === 'string' ? args.slug : '';
       const operation =
@@ -256,9 +290,9 @@ export function createConnectorBridgeMcpRoutes(deps: BridgeMcpDeps): Hono {
         return toolText('Both "slug" and "operation" are required.', true);
       }
       const res = await callDoor(
-        connectors,
-        '/execute',
-        authorization,
+        doors,
+        '/api/connectors/execute',
+        caller,
         { slug, operation, args: callArgs },
         requestTimeoutMs,
       );
@@ -266,9 +300,9 @@ export function createConnectorBridgeMcpRoutes(deps: BridgeMcpDeps): Hono {
     }
     if (name === 'connector_status') {
       const res = await callDoor(
-        connectors,
-        '/status',
-        authorization,
+        doors,
+        '/api/connectors/status',
+        caller,
         {},
         requestTimeoutMs,
       );
@@ -281,9 +315,9 @@ export function createConnectorBridgeMcpRoutes(deps: BridgeMcpDeps): Hono {
       (name === 'workspace_tool' && args.tool === 'workspace_status')
     ) {
       const res = await callDoor(
-        tools,
-        '/status',
-        authorization,
+        doors,
+        '/api/tools/status',
+        caller,
         {},
         requestTimeoutMs,
       );
@@ -297,9 +331,9 @@ export function createConnectorBridgeMcpRoutes(deps: BridgeMcpDeps): Hono {
         return toolText('"tool" is required.', true);
       }
       const res = await callDoor(
-        tools,
-        '/execute',
-        authorization,
+        doors,
+        '/api/tools/execute',
+        caller,
         { tool, args: callArgs },
         LONG_WORKSPACE_TOOLS.has(tool)
           ? longRequestTimeoutMs
@@ -388,7 +422,10 @@ export function createConnectorBridgeMcpRoutes(deps: BridgeMcpDeps): Hono {
   );
 
   app.post('/', async (c) => {
-    const authorization = c.req.header('authorization') ?? '';
+    const caller: DoorCaller = {
+      authorization: c.req.header('authorization') ?? '',
+      requestId: requestIdOf(c),
+    };
     const auth = await authSessionToken(deps.sql, c.req.raw);
     if (auth === null) {
       return rpcResponse(401, rpcError(null, -32001, 'Unauthorized.'));
@@ -453,7 +490,7 @@ export function createConnectorBridgeMcpRoutes(deps: BridgeMcpDeps): Hono {
         typeof meta.progressToken === 'number'
           ? meta.progressToken
           : undefined;
-      const call = handleToolCall(params.name, args, authorization);
+      const call = handleToolCall(params.name, args, caller);
       const acceptsStream = (c.req.header('accept') ?? '').includes(
         'text/event-stream',
       );

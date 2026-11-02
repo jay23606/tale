@@ -21,6 +21,7 @@ import type { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
 
 import { Hono } from 'hono';
+import { requestId } from 'hono/request-id';
 import type { Sql } from 'postgres';
 import {
   afterAll,
@@ -41,6 +42,7 @@ vi.mock('../../core/connectors/hostcall_token.ts', () => ({
 }));
 
 const { createConnectorBridgeMcpRoutes } = await import('./bridge-mcp.ts');
+const { appErrorHandler } = await import('../../error-reporting.ts');
 
 const RELAY = resolve(
   import.meta.dirname,
@@ -89,7 +91,8 @@ const sleep = (ms: number) =>
   new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 
 /** What a door answers, by the call: JSON for most, an HTML error page, a
- * refusal and a call that outlives the bound for the rest. */
+ * refusal, a call that outlives the bound and the errors a door lets escape
+ * (the database gone, a write conflict, a defect) for the rest. */
 async function answer(call: DoorCall): Promise<Response> {
   const body = call.body as Record<string, unknown>;
   const json = (status: number, value: unknown) =>
@@ -115,6 +118,21 @@ async function answer(call: DoorCall): Promise<Response> {
       status: 'unavailable',
       blockers: [{ code: 'no_credential', guidance: 'Connect it.' }],
     });
+  }
+  if (name === 'db-down') {
+    throw Object.assign(
+      new Error('terminating connection due to administrator command'),
+      { code: '57P01' },
+    );
+  }
+  if (name === 'conflict') {
+    throw Object.assign(
+      new Error('could not serialize access due to concurrent update'),
+      { code: '40001' },
+    );
+  }
+  if (name === 'defect') {
+    throw new Error('a defect the door let escape');
   }
   if (name === 'slow') {
     await sleep(REQUEST_TIMEOUT_MS * 3);
@@ -146,8 +164,11 @@ const connectorsDoor = stubDoor('connectors');
 const toolsDoor = stubDoor('tools');
 
 /** The platform as the relay and the harness see it: the two doors and
- * the endpoint, mounted where `app.ts` mounts them. */
+ * the endpoint, mounted where `app.ts` mounts them, under its request ids
+ * and its error handler. */
 const platform = new Hono();
+platform.use(requestId());
+platform.onError(appErrorHandler);
 platform.route('/api/connectors', connectorsDoor);
 platform.route('/api/tools', toolsDoor);
 platform.route(
@@ -251,7 +272,12 @@ async function viaRelay(
 
 function viaEndpoint(
   message: unknown,
-  init: { token?: string | null; accept?: string; method?: string } = {},
+  init: {
+    token?: string | null;
+    accept?: string;
+    method?: string;
+    requestId?: string;
+  } = {},
 ): Promise<Response> {
   const headers = new Headers({
     'content-type': 'application/json',
@@ -259,6 +285,9 @@ function viaEndpoint(
   });
   const token = init.token === undefined ? LIVE : init.token;
   if (token !== null) headers.set('authorization', `Bearer ${token}`);
+  if (init.requestId !== undefined) {
+    headers.set('x-request-id', init.requestId);
+  }
   return Promise.resolve(
     platform.request('/api/connectors/mcp', {
       method: init.method ?? 'POST',
@@ -295,6 +324,15 @@ const call = (name: string, args?: unknown) => ({
   method: 'tools/call',
   params: { name, ...(args === undefined ? {} : { arguments: args }) },
 });
+
+/** An answer with the request ids the app gives in its error bodies set
+ * aside: the relay's call and the endpoint's are two requests, with an id
+ * each. */
+const withAnyRequestId = (answer: unknown) =>
+  JSON.stringify(answer).replaceAll(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+    '<request id>',
+  );
 
 describe('POST /api/connectors/mcp — the relay’s answers [CONN-R34]', () => {
   it.each([
@@ -371,6 +409,61 @@ describe('POST /api/connectors/mcp — the relay’s answers [CONN-R34]', () => 
     for (const doorCall of result.endpointDoorCalls) {
       expect(doorCall.authorization).toBe(`Bearer ${LIVE}`);
     }
+  });
+
+  it.each([
+    [
+      'a door the database stopped answering',
+      'db-down',
+      '"code":"DATABASE_UNAVAILABLE"',
+    ],
+    [
+      'a door whose write met another at the same moment',
+      'conflict',
+      '"code":"HTTP_ERROR"',
+    ],
+    [
+      'a door that lets a defect escape',
+      'defect',
+      'a non-JSON response (status 500)',
+    ],
+  ])(
+    '%s, answered as the app answers the relay',
+    async (_label, slug, relayed) => {
+      const result = await both(call('connector', { slug, operation: 'x' }));
+      expect(result.status).toBe(200);
+      expect(result.relay).toMatchObject({
+        result: {
+          isError: true,
+          content: [{ type: 'text', text: expect.stringContaining(relayed) }],
+        },
+      });
+      expect(withAnyRequestId(result.endpoint)).toBe(
+        withAnyRequestId(result.relay),
+      );
+      expect(result.endpointDoorCalls).toEqual(result.relayDoorCalls);
+    },
+  );
+
+  it('answers a door’s error under the id of the request that asked', async () => {
+    const response = await viaEndpoint(
+      { ...call('connector', { slug: 'db-down', operation: 'x' }), id: 'rid' },
+      { requestId: 'req-outage-1' },
+    );
+    expect(await response.json()).toMatchObject({
+      id: 'rid',
+      result: {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: expect.stringContaining(
+              '"code":"DATABASE_UNAVAILABLE","requestId":"req-outage-1"',
+            ),
+          },
+        ],
+      },
+    });
   });
 
   it('reports progress on a long workspace tool, as the relay does, then answers', async () => {

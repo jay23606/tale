@@ -188,8 +188,8 @@ file store.
 
 An agent's harness reaches the connector and workspace tools either through the relay in its
 sandbox or from the platform's own MCP server. Both offer the same four tools and pass each
-call to the same place on the platform, so a call gets the same result, the same refusal and
-the same time limit through either. The server keeps nothing between requests and opens no
+call to the same place on the platform, so a call gets the same result, the same refusal, the
+same error and the same time limit through either. The server keeps nothing between requests and opens no
 stream of its own. A harness that would have to put the session's token where the agent can
 read it, and cannot today, keeps the relay.
 
