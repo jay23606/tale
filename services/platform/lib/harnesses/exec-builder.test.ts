@@ -384,7 +384,7 @@ describe("a CLI reaches the bridge as the platform's MCP server", () => {
   const exec = (slug: string) =>
     buildHarnessExec(fact(slug), managedSpec({ mcp: BRIDGE }));
 
-  // A CLI that mounts the platform's MCP server ([CONN-R33]) starts no relay
+  // A CLI that mounts the platform's MCP server ([CONN-R34]) starts no relay
   // process; its bearer token stays where the relay's env put it before:
   // claude's argv JSON, codex's exec env, an env reference in the gemini
   // family's settings and in OpenCode's config.

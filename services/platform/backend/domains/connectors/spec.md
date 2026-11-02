@@ -184,7 +184,7 @@ file store.
   fifth is refused as busy; a listing still paging after its minute is cut off at its next
   request, and a Gmail attachment the agent reads is not saved to the organization's files.
 
-### CONN-R33 · The platform serves an agent the connector tools exactly as its relay does
+### CONN-R34 · The platform serves an agent the connector tools exactly as its relay does
 
 An agent's harness reaches the connector and workspace tools either through the relay in its
 sandbox or from the platform's own MCP server. Both offer the same four tools and pass each
@@ -197,7 +197,7 @@ read it, and cannot today, keeps the relay.
   get the same four; Mia's reach the platform without a relay process in her sandbox, and a
   Tavily search returns the same result to both.
 
-### CONN-R34 · The MCP server acts only for the live session token each request presents
+### CONN-R35 · The MCP server acts only for the live session token each request presents
 
 Every request to the platform's MCP server presents the session token the relay would
 present. A request with no token, with one that is not a bearer token, with one Tale never

@@ -9,7 +9,7 @@ import { authSessionToken } from './bridge-routes.ts';
  * `POST /api/connectors/mcp`, MCP's Streamable HTTP transport — for the
  * harnesses whose CLI reaches a remote MCP server itself. It is the stdio
  * relay (`services/sandbox-runtime/tale-connectors-mcp`) moved into the
- * platform, so a turn on such a harness starts no relay process [CONN-R33]:
+ * platform, so a turn on such a harness starts no relay process [CONN-R34]:
  *
  *  - the same four tools, with the relay's descriptions and schemas;
  *  - each call goes to the doors the relay calls (`/api/connectors/
@@ -19,7 +19,7 @@ import { authSessionToken } from './bridge-routes.ts';
  *  - each answer is wrapped as the relay wraps it, bounds and texts included.
  *
  * Every request presents the session token itself and is refused without a
- * live one [CONN-R34]. The server keeps no MCP session (no `Mcp-Session-Id`):
+ * live one [CONN-R35]. The server keeps no MCP session (no `Mcp-Session-Id`):
  * the token a request carries is its only scope, so no request acts in the
  * scope of another request's token.
  */

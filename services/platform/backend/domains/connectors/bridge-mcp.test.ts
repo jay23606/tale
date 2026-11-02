@@ -2,13 +2,13 @@
 
 /**
  * The bridge's remote MCP server is the stdio relay moved into the platform
- * [CONN-R33]: every message below goes to the real relay
+ * [CONN-R34]: every message below goes to the real relay
  * (`services/sandbox-runtime/tale-connectors-mcp`, over HTTP to the same
  * stub doors) and to the endpoint, and the two answers must be equal — the
  * tools, their results, the refusals and the bounds. The doors see the same
  * body and the same token from both.
  *
- * Every request presents its own live session token [CONN-R34]: a missing,
+ * Every request presents its own live session token [CONN-R35]: a missing,
  * malformed, unknown, revoked (its session destroyed) or expired token is
  * refused before anything runs, and each request reaches the doors with its
  * own token only.
@@ -296,7 +296,7 @@ const call = (name: string, args?: unknown) => ({
   params: { name, ...(args === undefined ? {} : { arguments: args }) },
 });
 
-describe('POST /api/connectors/mcp — the relay’s answers [CONN-R33]', () => {
+describe('POST /api/connectors/mcp — the relay’s answers [CONN-R34]', () => {
   it.each([
     [
       'initialize',
@@ -425,7 +425,7 @@ describe('POST /api/connectors/mcp — the relay’s answers [CONN-R33]', () => 
   });
 });
 
-describe('POST /api/connectors/mcp — the session token [CONN-R34]', () => {
+describe('POST /api/connectors/mcp — the session token [CONN-R35]', () => {
   it.each([
     ['no token', null],
     ['an empty token', ''],
