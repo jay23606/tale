@@ -328,8 +328,8 @@ const call = (name: string, args?: unknown) => ({
 /** An answer with the request ids the app gives in its error bodies set
  * aside: the relay's call and the endpoint's are two requests, with an id
  * each. */
-const withAnyRequestId = (answer: unknown) =>
-  JSON.stringify(answer).replaceAll(
+const withAnyRequestId = (reply: unknown) =>
+  JSON.stringify(reply).replaceAll(
     /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
     '<request id>',
   );
