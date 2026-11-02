@@ -324,6 +324,11 @@ export function createConnectorBridgeMcpRoutes(deps: BridgeMcpDeps): Hono {
     const event = (message: unknown) =>
       encoder.encode(`event: message\ndata: ${JSON.stringify(message)}\n\n`);
     let timer: ReturnType<typeof setInterval> | undefined;
+    // A client can leave before the call ends (a turn cut short, a CLI that
+    // hangs up), which cancels the stream: the call still runs to its end,
+    // and nothing is written after, since a write to a cancelled stream
+    // throws.
+    let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         let progress = 0;
@@ -351,11 +356,19 @@ export function createConnectorBridgeMcpRoutes(deps: BridgeMcpDeps): Hono {
           )
           .then((answer) => {
             clearInterval(timer);
+            if (cancelled) return;
             controller.enqueue(event(answer));
             controller.close();
+          })
+          .catch((error: unknown) => {
+            console.warn(
+              '[connectors-bridge-mcp] could not end the progress stream',
+              error,
+            );
           });
       },
       cancel() {
+        cancelled = true;
         clearInterval(timer);
       },
     });

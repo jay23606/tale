@@ -527,6 +527,40 @@ describe('POST /api/connectors/mcp — the transport', () => {
     expect(await batch.json()).toMatchObject({ error: { code: -32600 } });
   });
 
+  it('lets a client leave a progress stream before its call ends', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const response = await viaEndpoint({
+        jsonrpc: '2.0',
+        id: 'leave',
+        method: 'tools/call',
+        params: {
+          name: 'workspace_tool',
+          arguments: { tool: 'generate_image' },
+          _meta: { progressToken: 'pt-3' },
+        },
+      });
+      const reader = response.body?.getReader();
+      if (reader === undefined) throw new Error('the stream has no body');
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toContain(
+        'notifications/progress',
+      );
+      await reader.cancel();
+      // The call ends after the client left; the stream must not be
+      // written to then.
+      await sleep(PROGRESS_INTERVAL_MS * 6);
+      expect(rejections).toEqual([]);
+      expect(doorCalls).toMatchObject([{ door: 'tools', path: '/execute' }]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
   it('opens no stream and keeps no session: GET and DELETE answer 405', async () => {
     for (const method of ['GET', 'DELETE']) {
       const response = await viaEndpoint(undefined, { method });
