@@ -562,7 +562,10 @@ async function cachedLiveCatalog(
     return serveDegraded(cached, defaults, remembered.error);
   }
 
-  let inFlight = liveCatalogInFlight.get(cacheKey);
+  // An anonymous fetch that is refused must not be joined by a caller that
+  // holds a key: that caller has its own attempt to make.
+  const flightKey = authenticated ? `${cacheKey}\nbearer` : cacheKey;
+  let inFlight = liveCatalogInFlight.get(flightKey);
   if (inFlight === undefined) {
     inFlight = fetchLiveCatalog(
       urls,
@@ -598,9 +601,9 @@ async function cachedLiveCatalog(
         throw error;
       })
       .finally(() => {
-        liveCatalogInFlight.delete(cacheKey);
+        liveCatalogInFlight.delete(flightKey);
       });
-    liveCatalogInFlight.set(cacheKey, inFlight);
+    liveCatalogInFlight.set(flightKey, inFlight);
   }
 
   try {

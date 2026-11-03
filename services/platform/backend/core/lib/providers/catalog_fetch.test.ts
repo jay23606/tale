@@ -1052,6 +1052,29 @@ describe('getProviderCatalog — listing credential', () => {
       warn.mockRestore();
     }
   });
+
+  it('does not join an anonymous read in flight, so a keyed read gets its own answer', async () => {
+    let refuseAnonymous!: (response: Response) => void;
+    mockedFetch.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        refuseAnonymous = resolve;
+      }),
+    );
+    const anonymous = getProviderCatalog(VERCEL, { maxAttempts: 1 });
+    await vi.waitFor(() => expect(mockedFetch).toHaveBeenCalledTimes(1));
+    mockedFetch.mockResolvedValueOnce(listingResponse(USABLE_PAYLOAD));
+    const keyed = await getProviderCatalog(VERCEL, {
+      maxAttempts: 1,
+      bearerToken: 'sk-listing',
+    });
+    expect(keyed.map((entry) => entry.id)).toEqual([
+      'anthropic/claude-sonnet-5',
+      'openai/gpt-5.5',
+    ]);
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
+    refuseAnonymous(unauthorized());
+    await expect(anonymous).rejects.toThrow('HTTP 401');
+  });
 });
 
 describe('getProviderCatalog — bare models endpoint listing', () => {
